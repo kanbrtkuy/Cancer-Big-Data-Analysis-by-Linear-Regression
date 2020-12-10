@@ -1,0 +1,307 @@
+---
+title: "Regression and Analysis of Variance (Dataset 1: Cancer)"
+author: "B00833984 Hanwen Zhang B00763452 Wenhui Xing B00757726 Ling Jiang"
+date: "12/09/2020"
+output:
+  html_document:
+   toc: true
+   toc_float: true
+   toc_depth: 6
+   collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message=FALSE,warning=FALSE,comment = NA)
+```
+
+
+```{r package install}
+# run this on your computer for the first time your run this rmd
+# devtools::install_github("datadotworld/data.world-r", build_vignettes = TRUE)
+```
+
+```{r libraries install}
+#install.packages("kableExtra")
+```
+
+```{r package import}
+library(readxl)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(data.world)
+library(maps)
+library(datasets)
+```
+
+## 1. Abstract
+
+Two possible factors GDP and Region are chosen to determine why different states have differences for being diagnosed and dying from cancer, since GDP reflects the medical resources of each state, different regions have different environments. Linear regression models are built for solving this question. The result shows the region is an essential factor to explain the difference in the death/incidence rate of different states but the GDP not. States in the south region have a larger death/incidence rate than states in the northeast, and states in north central and west have smaller values. What's more, for incidence/death rate, when the region is fixed as north central, the state with low GDP group has the lowest value. Especially, for death rate, when the region is fixed as south, the state with a higher GDP group has the lowest incidence rate.
+
+## 2. Introduction
+
+Different states have different death rate and incidence rate of cancer. Especially, there exist some variables that have an impact on the death/incidence rate directly and then results in different death/incidence rate in different states indirectly. For example, different states may have different GDP levels, so that the medical facilities are different, which significantly influences the death/incidence rate. What's more, each state's different geographical location will also cause differences in climate, environment, etc., which will affect the incidence of cancer. In all, many factors are worthy of study to answer why different states have different death/incidence rates. In this report, I focus on two possible aspects: GDP and the region. 
+
+```{r Read Data from dataworld}
+# copy your token from this page: https://data.world/settings/advanced
+saved_cfg <- data.world::save_config("eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJwcm9kLXVzZXItY2xpZW50OmJlY2t5eWUiLCJpc3MiOiJhZ2VudDpiZWNreXllOjpiNjgzYTMzNi03N2U4LTRiMzgtYTc1NS0yMzhiNWFlYmE0ZDIiLCJpYXQiOjE2MDczODAwMjcsInJvbGUiOlsidXNlcl9hcGlfcmVhZCIsInVzZXJfYXBpX3dyaXRlIl0sImdlbmVyYWwtcHVycG9zZSI6dHJ1ZSwic2FtbCI6e319.2X8eMMuAI7GVtlq1JKVyzg3pOQMZDEXZemwTtwl3gLye9rIlLOJ2G4VMUwsZVkx4u-DdsEVTTO2TFo3Cn9MwsA")
+data.world::set_config(saved_cfg)
+main_page <- "https://data.world/nrippner/cancer-linear-regression-model-tutorial/"
+query1 <- data.world::qry_sql("SELECT * FROM death")
+query2 <- data.world::qry_sql("SELECT * FROM incd")
+death_dat <- data.world::query(query1, dataset = main_page)
+incd_dat <- data.world::query(query2, dataset = main_page)
+```
+
+
+```{r import data of state and filps}
+data(state.fips)
+state.fips <- state.fips %>%
+  select(fips,abb)
+state.fips <- unique(state.fips)
+colnames(state.fips)[1] <- "state"
+# add Alaska(AK): 02
+state.fips[50,1] <- 2
+state.fips[50,2] <- "AK"
+# add HI
+state.fips[51,1] <- 15
+state.fips[51,2] <- "HI"
+
+
+dat_abb_full <- data.frame(abb = state.abb,
+                         area = state.name)
+dat_abb_full[51,] <- c("DC","District of Columbia")
+
+
+# divide the state to regions
+# referance:  https://www2.census.gov/geo/pdfs/maps-data/maps/reference/us_regdiv.pdf
+dat_region <- data.frame(abb = state.abb,
+                         region = state.region)
+dat_region[51,] <- c("DC","South")
+```
+
+
+```{r Combine other data}
+# GDP data
+main_page <- "https://data.world/garyhoov/gdp-by-state-2000-2015"
+query <- data.world::qry_sql("SELECT * FROM data")
+GDP_dat <- data.world::query(query, dataset = main_page)
+GDP_dat <- GDP_dat %>%
+  slice(2:n()) %>%
+  select(area,`2015_mm`) %>%
+  filter(area %in% dat_abb_full$area)
+
+# deivide the GDP into 3 categories
+breaks <- c(0,quantile(GDP_dat$`2015_mm`,c(1/3,2/3,1)))
+GDP_dat$GDP_rank <- cut(GDP_dat$`2015_mm`,
+                        breaks,labels = c("low","medium","high"),
+                        right = T)
+GDP_dat <- merge(GDP_dat,dat_abb_full,by="area")
+GDP_dat <- GDP_dat %>%
+   select(abb,GDP_rank)
+```
+
+## 3. Data Description
+
+### 3.1 Introduce one new additional data point into death.csv
+
+Each row in the dataset represents a different county, and it almost contains all counties. Hence we fill in one row with the value of 'age_adjusted_death_rate' missing instead of adding a row. The row we choose is a county with FIPS equals 2282. We have the data of its nearby county, whose FIPS is 2280. The confidence interval given in the table shows that the 95% CI of the 'age_adjusted_death_rate' in that county is [35.3,93.3], so we choose a random value in that range to fill in the missing value of the county.
+
+```{r fill in one missing value in death data}
+set.seed(1)
+death_dat[death_dat$fips=="2282","age_adjusted_death_rate"] <- runif(1,35.3,93.3)   
+```
+
+
+### 3.2 Introduce one new additional data point into incd.csv
+
+Similarly, each row in the dataset represents a different county, and it almost contains all counties. Hence we fill in one row with the value of 'age_adjusted_incidence_rate_e_cases_per_100_000' missing instead of adding an additional row. The row we choose is a county with FIPS equals 56035. We have the data of its nearby county, whose FIPS is 56037. The confidence interval given in the table shows that the 95% CI of the 'age_adjusted_incidence_rate_e_cases_per_100_000' in that county is [30.5,51.1], so we choose a random value in that range to fill in the missing value of the county.
+
+```{r fill in one missing value in incidence data}
+set.seed(1)
+colnames(incd_dat)[3] <- "age_adjusted_incidence_rate"
+incd_dat$age_adjusted_incidence_rate <- as.numeric(as.character(incd_dat$age_adjusted_incidence_rate))
+incd_dat[incd_dat$fips=="56035","age_adjusted_incidence_rate"] <- runif(1,30.5,51.1)   
+```
+### 3.3 Merge with GDP and region data
+
+To answer the question that we bring out in the introduction, we need to get the GDP and region data for each state and the death/incidence rate. The GDP data is also obtained from data.world. We categorize it into three groups (low, medium, high) based on the $\frac{1}{3}$,  $\frac{2}{3}$ quantiles. We get region data directly from the package 'datasets' in R. They divide all states into four regions: Northeast, South, North Central (Same as 'Midwest' nowadays) and West. Detail of the data can be retrive from [here](https://www2.census.gov/geo/pdfs/maps-data/maps/reference/us_regdiv.pdf).
+
+```{r data manipulation}
+# extract the country and the state information from the # fips
+death_dat <- death_dat %>%
+  mutate(state=substr(fips, 1, nchar(fips)-3)) %>%
+  select(county,state,age_adjusted_death_rate)%>%
+  slice(2:n())
+
+incd_dat <- incd_dat %>%
+  mutate(state=substr(fips, 1, nchar(fips)-3)) %>%
+  select(county,state,age_adjusted_incidence_rate)%>%
+  slice(2:n())
+```
+
+```{r match with our data}
+death_dat$state <- as.numeric(as.character(death_dat$state))
+incd_dat$state <- as.numeric(as.character(incd_dat$state))
+death_dat <- merge(death_dat,state.fips,by="state",all.x = T)
+incd_dat <- merge(incd_dat,state.fips,by="state",all.x =T)
+
+death_dat <- merge(death_dat,dat_region,by="abb",all.x = T)
+death_dat <- merge(death_dat,GDP_dat,by="abb",all.x = T)
+
+incd_dat <- merge(incd_dat,dat_region,by="abb",all.x = T)
+incd_dat <- merge(incd_dat,GDP_dat,by="abb",all.x = T)
+```
+
+```{r prep our final data}
+death_dat <- death_dat %>%
+  select(region,GDP_rank,age_adjusted_death_rate)
+incd_dat <- incd_dat %>%
+  select(region,GDP_rank,age_adjusted_incidence_rate)
+
+death_dat <- na.omit(death_dat)
+incd_dat <- na.omit(incd_dat)
+```
+
+My cleaned data for the death rate looks like below:
+```{r take a look of our data death}
+head(death_dat)
+```
+
+My cleaned data for incidence rate looks like below:
+```{r take a look of our data incd}
+head(incd_dat)
+```
+
+### 3.4 Data visualizations
+
+#### 3.4.1 Death rate for different regions
+```{r draw the box plot for death data: region}
+ggplot(death_dat,aes(region,age_adjusted_death_rate))+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Region",y="age adjusted death rate")
+```
+
+From the above figure, we could see the terms of death rate are different between different regions. For example, South region has the highest mean death rate, and West region has the lowest mean death rate. Besides, Northeast and north central regions have similar mean death rates but different variance. 
+
+#### 3.4.2 Death rate for different GDP groups
+```{r draw the box plot for death data: GDP rank}
+ggplot(death_dat,aes(GDP_rank,age_adjusted_death_rate))+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Level of GDP",y="age adjusted death rate")
+```
+
+From the above figure, we could cay there does not exist obvious difference between different groups. 
+
+#### 3.4.3 Death rate for different regions and GDP groups
+```{r draw the box plot for death data: GDP rank and region}
+ggplot(death_dat,aes(GDP_rank,age_adjusted_death_rate))+facet_wrap( ~ region, ncol=2)+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Level of GDP",y="age adjusted death rate")
+```
+
+To explore whether the interaction term should be considered in the model part, we draw the above figure. The effect of GDP level is different among different regions. For example, in northeast, when the state's level of GDP is medium, it has the lowest death rate compared to other two GDP groups. In south region, the state in the high GDP group has the lowest death rate.
+
+#### 3.4.4 Incidence rate for different regions
+```{r draw the box plot for incd data: region}
+ggplot(incd_dat,aes(region,age_adjusted_incidence_rate))+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Region",y="age adjusted incidence rate")
+```
+
+From the above figure, we could see a difference between different states in terms of incidence rate. Similarly, south region has the highest mean incidence rate, and west region has the lowest mean incidence rate. Besides, Northeast and north central regions have similar mean incidence rate but different variances.
+
+#### 3.4.5 Incidence rate for different GDP groups
+```{r draw the box plot for incd data: GDP_rank}
+ggplot(incd_dat,aes(GDP_rank,age_adjusted_incidence_rate))+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Level of GDP",y="age adjusted incidence rate")
+```
+
+From the above figure, we could say the difference among the three GDP groups is too small.
+
+#### 3.4.6 Incidence rate for different regions and GDP groups
+```{r draw the box plot for incd data: GDP_rank+region}
+ggplot(incd_dat,aes(GDP_rank,age_adjusted_incidence_rate))+facet_wrap( ~ region, ncol=2)+
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 10,face = "bold"))+
+  labs(x="Level of GDP",y="age adjusted incidence rate")
+```
+
+Similarly, To explore whether the interaction term should be considered in the model part, we draw the above figure. Clearly, the effect of GDP level is different among different regions. For example, In northeast, when the the level of GDP of the state is medium, it has the lowest incidence rate compared to other two GDP groups. In north central region, the state in the low GDP group has the lowest incidence rate. 
+
+## 4. Methods
+
+To select the best model, we use step forward here. The null model is only with intercept and the full model is with region, GDP_rank and their interaction term. The outcome is the death rate.
+This prcocess output the full model as the best model. Also, it has the smallest AIC.
+
+### 4.1 Select Models for Death Rate
+
+
+```{r model selection for death data}
+nullmodel=lm(age_adjusted_death_rate~1,data = death_dat)
+fullmodel=lm(age_adjusted_death_rate~region+GDP_rank+GDP_rank*region,data = death_dat)
+step1=step(nullmodel,scope=list(lower=nullmodel, upper=fullmodel), direction="forward")
+```
+
+### 4.2 Select Models for Incidence Rate
+
+The model selection for the incidence data is similar to that for the death rate，The outcome is the incidence rate, and the best model is the full model with GDP_rank, region and their interaction term. 
+
+```{r model selection for inci data}
+nullmodel=lm(age_adjusted_incidence_rate~1,data = incd_dat)
+fullmodel=lm(age_adjusted_incidence_rate~region+GDP_rank+GDP_rank*region,data = incd_dat)
+step2=step(nullmodel,scope=list(lower=nullmodel, upper=fullmodel), direction="forward")
+```
+
+## 5. Results
+
+### 5.1 Result for death rate
+Here is the model result for 
+$$death\_rate \sim GDP\_rank + region + region*GDP\_rank$$
+
+```{r model for death data}
+summary(step1)
+```
+
+For the result of the model for the death rate above, we can see that when the other variables are constant, the mean death rate of the South region is estimated to 12.166 more than that of the northeast. The mean death rate of the north central region is estimated to 6.105 less than that of the northeast. At the significant level of 0.05, there is no significant difference among the three GDP groups, consistent with my data visualization part statements. For the interaction term, some of them are significant. Take region south: GDP_rankhigh for example, when the region is fixed as south, the state with high GDP group is estimated to 6.850 less death rate than that of low GDP group. 
+
+
+The $R^2$ is 28.1%, which implies about 28.1% variation in death rate can be explained by the model.
+
+
+### 5.2 Result for incidence rate
+
+Here is the model result for 
+$$incidence\_rate \sim GDP\_rank + region + region*GDP\_rank$$
+
+```{r model for incidence data}
+summary(step2)
+```
+
+For the result of the model for the incidence rate above, we can see that when the other variables are constant, the South region's mean incidence rate is estimated to 7.85 more than that of the northeast. The mean incidence rate of north central region is estimated to 11.972 less than that of the northeast. At the significant level of 0.05, there is no significant difference among the three GDP groups, consistent with my data visualization part statements. For the interaction term, some of them are significant. Take regionNorth Central: GDP_rankhigh and regionNorth Central: GDP_rankmedium. For example, they are both significant and positive, which means when the region is fixed as north central, the state with a low GDP group has the lowest incidence rate.
+
+The $R^2$ is 27.5%, which implies about 27.5% variation in indience rate can be explained by the model.
+
+## 6. Conclusion
+
+* Region: States in the south region has a higher death/incidence rate than states in the northeast when other variables are constant. States in north central and west have lower death/incidence rates.
+
+* GDP groups: There is no significant evidence that shows that the death/incidence rate is different among the three GDP groups. However, this should be important, according to our common sense. In the future, we might try to use different indicators to denote each state's economic status or even the indicator of the invest of medical facilities to explore more. 
+
+* Interaction terms: For incidence rate, when the region is fixed as north central, the state with low GDP group has the lowest incidence rate. For death rate, same as the incidence rate, when the region is fixed as north central, the state with low GDP group has the lowest death rate. Furthermore, when the region is fixed as south, the state with high GDP group has the lowest incidence rate.
+
+
+## 7. Appendix
+
+[Data source for the cancer data](https://data.world/nrippner/cancer-linear-regression-model-tutorial/)  
+
+[Data source for the GDP data](https://data.world/garyhoov/gdp-by-state-2000-2015)  
+
+[R Markdown file](https://github.com/kanbrtkuy/finalProject)
